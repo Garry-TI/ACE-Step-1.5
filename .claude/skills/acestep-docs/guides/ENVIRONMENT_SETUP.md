@@ -196,3 +196,81 @@ start_gradio_ui.bat
 - Using Git repository
 - Want smaller installation size
 - Need frequent code updates
+
+## Environment Variables (.env)
+
+For uv or Python users, ACE-Step can be configured using environment variables in a `.env` file.
+
+### Setup
+
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit .env with your preferred settings
+```
+
+### Available Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ACESTEP_INIT_LLM` | (auto) | LLM initialization control |
+| `ACESTEP_CONFIG_PATH` | acestep-v15-turbo | DiT model path |
+| `ACESTEP_LM_MODEL_PATH` | (auto) | LM model path |
+| `ACESTEP_DEVICE` | auto | Device: auto, cuda, cpu, xpu |
+| `ACESTEP_LM_BACKEND` | vllm | LM backend: vllm, pt |
+| `ACESTEP_DOWNLOAD_SOURCE` | auto | Download source |
+| `ACESTEP_API_KEY` | (none) | API authentication key |
+
+### ACESTEP_INIT_LLM - LLM Initialization Control
+
+Controls whether the Language Model (5Hz LM) is initialized at startup.
+
+**Processing Flow:**
+```
+GPU Detection (full) → ACESTEP_INIT_LLM Override → Model Loading
+```
+
+- GPU optimizations (offload, quantization, batch limits) are **always applied**
+- `ACESTEP_INIT_LLM` only overrides the "should we load LLM" decision
+- Model validation shows warnings but doesn't block when forcing
+
+| Value | Behavior |
+|-------|----------|
+| `auto` (or empty) | Use GPU auto-detection result (recommended) |
+| `true` / `1` / `yes` | Force enable LLM after GPU detection (may cause OOM) |
+| `false` / `0` / `no` | Force disable for pure DiT mode |
+
+**Example configurations:**
+
+```bash
+# Auto mode (recommended) - let GPU detection decide
+ACESTEP_INIT_LLM=auto
+
+# Auto mode - leave empty (same as above)
+ACESTEP_INIT_LLM=
+
+# Force enable on low VRAM GPU (GPU optimizations still applied)
+ACESTEP_INIT_LLM=true
+ACESTEP_LM_MODEL_PATH=acestep-5Hz-lm-0.6B  # Use smallest model
+
+# Force disable LLM for faster generation
+ACESTEP_INIT_LLM=false
+```
+
+### Features Affected by LLM
+
+When LLM is disabled (`ACESTEP_INIT_LLM=false`), these features are unavailable:
+
+| Feature | Description | Available without LLM |
+|---------|-------------|----------------------|
+| Thinking mode | LLM generates audio codes | ❌ |
+| CoT caption | LLM enhances captions | ❌ (auto-disabled) |
+| CoT language | LLM detects vocal language | ❌ (auto-disabled) |
+| Sample mode | Generate from description | ❌ |
+| Format mode | LLM-enhanced input | ❌ |
+| Basic generation | DiT-based synthesis | ✅ |
+| Cover/Repaint | Audio editing tasks | ✅ |
+
+Note: When using the API server, CoT features (`use_cot_caption`, `use_cot_language`) are automatically disabled when LLM is unavailable, allowing basic generation to proceed.
+

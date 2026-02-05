@@ -20,6 +20,19 @@ REM set DOWNLOAD_SOURCE=--download-source modelscope
 REM set DOWNLOAD_SOURCE=--download-source huggingface
 set DOWNLOAD_SOURCE=
 
+REM LLM (Language Model) initialization settings
+REM By default, LLM is auto-enabled/disabled based on GPU VRAM:
+REM   - <=6GB VRAM: LLM disabled (DiT-only mode)
+REM   - >6GB VRAM: LLM enabled
+REM Values: auto (default), true (force enable), false (force disable)
+REM set ACESTEP_INIT_LLM=auto
+REM set ACESTEP_INIT_LLM=true
+REM set ACESTEP_INIT_LLM=false
+
+REM LM model path (optional, only used when LLM is enabled)
+REM Available models: acestep-5Hz-lm-0.6B, acestep-5Hz-lm-1.7B, acestep-5Hz-lm-4B
+REM set LM_MODEL_PATH=--lm-model-path acestep-5Hz-lm-0.6B
+
 REM Update check settings (for portable package users with PortableGit)
 REM Check for updates from GitHub before starting
 set CHECK_UPDATE=false
@@ -35,7 +48,7 @@ if /i "%CHECK_UPDATE%"=="true" (
     if exist "%~dp0check_update.bat" (
         if exist "%~dp0PortableGit\bin\git.exe" (
             call "%~dp0check_update.bat"
-            set UPDATE_CHECK_RESULT=%ERRORLEVEL%
+            set UPDATE_CHECK_RESULT=!ERRORLEVEL!
 
             if !UPDATE_CHECK_RESULT! EQU 1 (
                 echo.
@@ -44,7 +57,7 @@ if /i "%CHECK_UPDATE%"=="true" (
                 echo.
             ) else if !UPDATE_CHECK_RESULT! EQU 2 (
                 echo.
-                echo [Info] Update check skipped (network timeout).
+                echo [Info] Update check skipped (network timeout^).
                 echo Continuing with startup...
                 echo.
             )
@@ -70,127 +83,92 @@ echo.
 REM Auto-detect Python environment
 if exist "%~dp0python_embeded\python.exe" (
     echo [Environment] Using embedded Python...
-    "%~dp0python_embeded\python.exe" "%~dp0acestep\api_server.py" ^
-        --host %HOST% ^
-        --port %PORT% ^
-        %API_KEY% ^
-        %DOWNLOAD_SOURCE%
+
+    REM Build command with optional parameters
+    set "PYTHON_EXE=%~dp0python_embeded\python.exe"
+    set "SCRIPT_PATH=%~dp0acestep\api_server.py"
+    set "CMD=--host %HOST% --port %PORT%"
+    if not "%API_KEY%"=="" set "CMD=!CMD! %API_KEY%"
+    if not "%DOWNLOAD_SOURCE%"=="" set "CMD=!CMD! %DOWNLOAD_SOURCE%"
+    if not "%LM_MODEL_PATH%"=="" set "CMD=!CMD! %LM_MODEL_PATH%"
+
+    "!PYTHON_EXE!" "!SCRIPT_PATH!" !CMD!
 ) else (
     echo [Environment] Embedded Python not found, checking for uv...
 
     REM Check if uv is installed
     where uv >nul 2>&1
-    if %ERRORLEVEL% NEQ 0 (
+    if !ERRORLEVEL! NEQ 0 (
         echo.
         echo ========================================
         echo uv package manager not found!
         echo ========================================
         echo.
         echo ACE-Step requires either:
-        echo   1. python_embeded directory (portable package)
+        echo   1. python_embeded directory ^(portable package^)
         echo   2. uv package manager
         echo.
-        echo Would you like to install uv now? (Recommended)
+        echo Would you like to install uv now? ^(Recommended^)
         echo.
         set /p INSTALL_UV="Install uv? (Y/N): "
 
-        if /i "%INSTALL_UV%"=="Y" (
+        if /i "!INSTALL_UV!"=="Y" (
             echo.
-            echo Installing uv...
-            echo.
+            REM Call install_uv.bat in silent mode
+            call "%~dp0install_uv.bat" --silent
+            set INSTALL_RESULT=!ERRORLEVEL!
 
-            REM Try winget first (Windows 10 1809+ / Windows 11)
-            where winget >nul 2>&1
-            if %ERRORLEVEL% EQU 0 (
-                echo [Method 1] Using winget (Windows Package Manager)...
+            if !INSTALL_RESULT! EQU 0 (
                 echo.
-                winget install --id=astral-sh.uv -e --silent
+                echo ========================================
+                echo uv installed successfully!
+                echo ========================================
+                echo.
 
-                if %ERRORLEVEL% EQU 0 (
+                REM Refresh PATH to include uv
+                if exist "%USERPROFILE%\.local\bin\uv.exe" (
+                    set "PATH=%USERPROFILE%\.local\bin;%PATH%"
+                )
+                if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links\uv.exe" (
+                    set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%"
+                )
+
+                REM Verify uv is available
+                where uv >nul 2>&1
+                if !ERRORLEVEL! EQU 0 (
+                    echo uv is now available!
+                    uv --version
                     echo.
-                    echo ========================================
-                    echo uv installed successfully via winget!
-                    echo ========================================
-                    goto :CheckUvInstallation
+                    goto :RunWithUv
                 ) else (
+                    REM Try direct paths
+                    if exist "%USERPROFILE%\.local\bin\uv.exe" (
+                        set "PATH=%USERPROFILE%\.local\bin;%PATH%"
+                        goto :RunWithUv
+                    )
+                    if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links\uv.exe" (
+                        set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%"
+                        goto :RunWithUv
+                    )
+
                     echo.
-                    echo winget installation failed, trying PowerShell...
+                    echo uv installed but not in PATH yet.
+                    echo Please restart your terminal or run:
+                    echo   %USERPROFILE%\.local\bin\uv.exe run acestep-api
+                    echo.
+                    pause
+                    exit /b 1
                 )
             ) else (
-                echo [Info] winget not available, using PowerShell...
-            )
-
-            REM Fallback to PowerShell
-            echo [Method 2] Using PowerShell...
-            echo This may take a few moments...
-            echo.
-
-            powershell -NoProfile -ExecutionPolicy Bypass -Command "& {try { Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression; Write-Host 'uv installed successfully!' -ForegroundColor Green } catch { Write-Host 'Installation failed. Please install manually.' -ForegroundColor Red; exit 1 }}"
-
-            if %ERRORLEVEL% NEQ 0 (
                 echo.
                 echo ========================================
                 echo Installation failed!
                 echo ========================================
                 echo.
                 echo Please install uv manually:
-                echo   1. Using winget: winget install --id=astral-sh.uv -e
-                echo   2. Using PowerShell: irm https://astral.sh/uv/install.ps1 ^| iex
+                echo   1. Using PowerShell: irm https://astral.sh/uv/install.ps1 ^| iex
+                echo   2. Using winget: winget install --id=astral-sh.uv -e
                 echo   3. Download portable package: https://files.acemusic.ai/acemusic/win/ACE-Step-1.5.7z
-                echo.
-                pause
-                exit /b 1
-            )
-
-            :CheckUvInstallation
-            echo.
-            echo ========================================
-            echo uv installed successfully!
-            echo ========================================
-            echo.
-            echo Refreshing environment...
-
-            REM Refresh PATH to include uv
-            REM Check common installation locations
-            if exist "%USERPROFILE%\.local\bin\uv.exe" (
-                set "PATH=%USERPROFILE%\.local\bin;%PATH%"
-            )
-            if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links\uv.exe" (
-                set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%"
-            )
-
-            REM Verify uv is now available
-            where uv >nul 2>&1
-            if %ERRORLEVEL% EQU 0 (
-                echo uv is now available!
-                uv --version
-                echo.
-                goto :RunWithUv
-            ) else (
-                REM Try direct paths
-                if exist "%USERPROFILE%\.local\bin\uv.exe" (
-                    "%USERPROFILE%\.local\bin\uv.exe" --version >nul 2>&1
-                    if %ERRORLEVEL% EQU 0 (
-                        set "PATH=%USERPROFILE%\.local\bin;%PATH%"
-                        echo uv is now available!
-                        echo.
-                        goto :RunWithUv
-                    )
-                )
-                if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links\uv.exe" (
-                    "%LOCALAPPDATA%\Microsoft\WinGet\Links\uv.exe" --version >nul 2>&1
-                    if %ERRORLEVEL% EQU 0 (
-                        set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%"
-                        echo uv is now available!
-                        echo.
-                        goto :RunWithUv
-                    )
-                )
-
-                echo.
-                echo uv installed but not in PATH yet.
-                echo Please restart your terminal or run:
-                echo   %USERPROFILE%\.local\bin\uv.exe run acestep-api
                 echo.
                 pause
                 exit /b 1
@@ -222,7 +200,7 @@ if exist "%~dp0python_embeded\python.exe" (
 
         uv sync
 
-        if %ERRORLEVEL% NEQ 0 (
+        if !ERRORLEVEL! NEQ 0 (
             echo.
             echo ========================================
             echo [Error] Failed to setup environment
@@ -247,11 +225,15 @@ if exist "%~dp0python_embeded\python.exe" (
 
     echo Starting ACE-Step API Server...
     echo.
-    uv run acestep-api ^
-        --host %HOST% ^
-        --port %PORT% ^
-        %API_KEY% ^
-        %DOWNLOAD_SOURCE%
+
+    REM Build command with optional parameters
+    set "CMD=uv run acestep-api --host %HOST% --port %PORT%"
+    if not "%API_KEY%"=="" set "CMD=!CMD! %API_KEY%"
+    if not "%DOWNLOAD_SOURCE%"=="" set "CMD=!CMD! %DOWNLOAD_SOURCE%"
+    if not "%LM_MODEL_PATH%"=="" set "CMD=!CMD! %LM_MODEL_PATH%"
+
+    !CMD!
 )
 
 pause
+endlocal

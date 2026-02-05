@@ -127,6 +127,21 @@ set CHECK_UPDATE=true
 REM Model configuration
 set CONFIG_PATH=--config_path acestep-v15-turbo
 set LM_MODEL_PATH=--lm_model_path acestep-5Hz-lm-1.7B
+
+REM LLM initialization (auto/true/false)
+REM Auto: enabled if VRAM > 6GB, disabled otherwise
+REM set INIT_LLM=--init_llm true   # Force enable (may cause OOM on low VRAM)
+REM set INIT_LLM=--init_llm false  # Force disable (DiT-only mode)
+```
+
+**start_api_server.bat:**
+```batch
+REM LLM initialization via environment variable
+REM set ACESTEP_INIT_LLM=true   # Force enable LLM
+REM set ACESTEP_INIT_LLM=false  # Force disable LLM (DiT-only mode)
+
+REM LM model path (optional)
+REM set LM_MODEL_PATH=--lm-model-path acestep-5Hz-lm-0.6B
 ```
 
 #### 🔄 Update & Maintenance Tools
@@ -287,6 +302,7 @@ API runs at http://localhost:8001. See [API Documentation](./docs/en/API.md) for
 | `--share` | false | Create public Gradio link |
 | `--language` | en | UI language: `en`, `zh`, `ja` |
 | `--init_service` | false | Auto-initialize models on startup |
+| `--init_llm` | auto | LLM initialization: `true` (force), `false` (disable), omit for auto |
 | `--config_path` | auto | DiT model (e.g., `acestep-v15-turbo`, `acestep-v15-turbo-shift3`) |
 | `--lm_model_path` | auto | LM model (e.g., `acestep-5Hz-lm-0.6B`, `acestep-5Hz-lm-1.7B`) |
 | `--offload_to_cpu` | auto | CPU offload (auto-enabled if VRAM < 16GB) |
@@ -334,6 +350,53 @@ python acestep/acestep_v15_pipeline.py --download-source modelscope
 uv run acestep --download-source huggingface
 # Or using Python directly:
 python acestep/acestep_v15_pipeline.py --download-source huggingface
+```
+
+### Environment Variables (.env)
+
+For `uv` or Python users, you can configure ACE-Step using environment variables in a `.env` file:
+
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit .env with your settings
+```
+
+**Key environment variables:**
+
+| Variable | Values | Description |
+|----------|--------|-------------|
+| `ACESTEP_INIT_LLM` | (empty), `true`, `false` | LLM initialization mode |
+| `ACESTEP_CONFIG_PATH` | model name | DiT model path |
+| `ACESTEP_LM_MODEL_PATH` | model name | LM model path |
+| `ACESTEP_DOWNLOAD_SOURCE` | `auto`, `huggingface`, `modelscope` | Download source |
+| `ACESTEP_API_KEY` | string | API authentication key |
+
+**LLM Initialization (`ACESTEP_INIT_LLM`):**
+
+Processing flow: `GPU Detection (full) → ACESTEP_INIT_LLM Override → Model Loading`
+
+GPU optimizations (offload, quantization, batch limits) are **always applied**. The override only controls whether to attempt LLM loading.
+
+| Value | Behavior |
+|-------|----------|
+| `auto` (or empty) | Use GPU auto-detection result (recommended) |
+| `true` / `1` / `yes` | Force enable LLM after GPU detection (may cause OOM) |
+| `false` / `0` / `no` | Force disable for pure DiT mode, faster generation |
+
+**Example `.env` for different scenarios:**
+
+```bash
+# Auto mode (recommended) - let GPU detection decide
+ACESTEP_INIT_LLM=auto
+
+# Force enable on low VRAM GPU (GPU optimizations still applied)
+ACESTEP_INIT_LLM=true
+ACESTEP_LM_MODEL_PATH=acestep-5Hz-lm-0.6B
+
+# Force disable LLM for faster generation
+ACESTEP_INIT_LLM=false
 ```
 
 ### Development

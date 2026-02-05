@@ -113,7 +113,15 @@ def main():
         print(f"CPU offload disabled by default (GPU >= 16GB)")
     else:
         print("No GPU detected, running on CPU")
-    
+
+    # Define local outputs directory
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    output_dir = os.path.join(project_root, "gradio_outputs")
+    # Normalize path to use forward slashes for Gradio 6 compatibility on Windows
+    output_dir = output_dir.replace("\\", "/")
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Output directory: {output_dir}")
+
     parser = argparse.ArgumentParser(description="Gradio Demo for ACE-Step V1.5")
     parser.add_argument("--port", type=int, default=7860, help="Port to run the gradio server on")
     parser.add_argument("--share", action="store_true", help="Create a public link")
@@ -295,6 +303,7 @@ def main():
                 'llm_handler': llm_handler,
                 'language': args.language,
                 'gpu_config': gpu_config,  # Pass GPU config to UI
+                'output_dir': output_dir,  # Pass output dir to UI
             }
             
             print("Service initialization completed successfully!")
@@ -307,6 +316,7 @@ def main():
             init_params = {
                 'gpu_config': gpu_config,
                 'language': args.language,
+                'output_dir': output_dir,  # Pass output dir to UI
             }
         
         demo = create_demo(init_params=init_params, language=args.language)
@@ -317,6 +327,7 @@ def main():
         demo.queue(
             max_size=20,  # Maximum queue size (adjust based on your needs)
             status_update_rate="auto",  # Update rate for queue status
+            default_concurrency_limit=1,  # Prevents VRAM saturation
         )
 
         print(f"Launching server on {args.server_name}:{args.port}...")
@@ -342,6 +353,7 @@ def main():
                 prevent_thread_lock=True,  # Don't block, so we can add routes
                 inbrowser=False,
                 auth=auth,
+                allowed_paths=[output_dir],  # Fix audio loading on Windows
             )
 
             # Now add API routes to Gradio's FastAPI app (app is available after launch)
@@ -368,6 +380,7 @@ def main():
                 prevent_thread_lock=False,
                 inbrowser=False,
                 auth=auth,
+                allowed_paths=[output_dir],  # Fix audio loading on Windows
             )
     except Exception as e:
         print(f"Error launching Gradio: {e}", file=sys.stderr)

@@ -2,6 +2,8 @@
 
 This guide explains how to configure the startup scripts (`start_gradio_ui.bat` and `start_api_server.bat`).
 
+> **Note for uv/Python users**: If you're using `uv run acestep` or running Python directly (not using bat files), configure settings via the `.env` file instead. See [ENVIRONMENT_SETUP.md](ENVIRONMENT_SETUP.md#environment-variables-env) for details.
+
 ## Configuration Sections
 
 ### 1. UI Language
@@ -154,6 +156,66 @@ REM Use higher quality models
 set CONFIG_PATH=--config_path acestep-v15-quality
 set LM_MODEL_PATH=--lm_model_path acestep-5Hz-lm-1.7B
 ```
+
+---
+
+### 6. LLM Initialization Control
+
+**Location**: Both `start_gradio_ui.bat` and `start_api_server.bat`
+
+By default, LLM (Language Model) is automatically enabled/disabled based on GPU VRAM:
+- **≤6GB VRAM**: LLM disabled (DiT-only mode)
+- **>6GB VRAM**: LLM enabled
+
+**Processing Flow:**
+```
+GPU Detection (full) → ACESTEP_INIT_LLM Override → Model Loading
+```
+
+GPU optimizations (offload, quantization, batch limits) are **always applied**.
+The override only controls whether to attempt LLM loading.
+
+You can override this behavior:
+
+**Gradio UI** (`start_gradio_ui.bat`):
+```batch
+REM Force enable LLM (GPU optimizations still applied)
+set INIT_LLM=--init_llm true
+
+REM Force disable LLM (pure DiT mode, faster)
+set INIT_LLM=--init_llm false
+```
+
+**API Server** (`start_api_server.bat`):
+```batch
+REM Auto mode (recommended) - let GPU detection decide
+set ACESTEP_INIT_LLM=auto
+
+REM Force enable LLM via environment variable
+set ACESTEP_INIT_LLM=true
+
+REM Force disable LLM
+set ACESTEP_INIT_LLM=false
+
+REM Optionally specify LM model path
+set LM_MODEL_PATH=--lm-model-path acestep-5Hz-lm-0.6B
+```
+
+**When to use**:
+
+| Setting | Use Case |
+|---------|----------|
+| `auto` | Let GPU detection decide (recommended) |
+| `true` | Force LLM on low VRAM GPU (GPU optimizations still applied, may OOM) |
+| `false` | Pure DiT mode for faster generation |
+
+**Features affected by LLM**:
+- **Thinking mode**: LLM generates audio codes for better quality
+- **Chain-of-Thought (CoT)**: Auto-enhance captions, detect language, generate metadata
+- **Sample mode**: Generate random songs from descriptions
+- **Format mode**: Enhance user input via LLM
+
+When LLM is disabled, these features are automatically disabled, and generation uses pure DiT mode.
 
 ---
 
