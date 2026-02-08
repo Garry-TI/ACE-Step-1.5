@@ -931,23 +931,14 @@ def generate_with_progress(
     # On other platforms, audio was already sent in loop yields, just reset playback position
     # Use gr.update() to force Gradio to update the audio component (Issue #113)
     audio_playback_updates = []
-    if IS_WINDOWS:
-        for idx in range(8):
-            path = audio_outputs[idx]
-            if path:
-                # Pass path directly; Gradio Audio component with type="filepath" expects a string path
-                audio_playback_updates.append(gr.update(value=path, label=f"Sample {idx+1} (Ready)", playback_position=0, interactive=True))
-                logger.info(f"[generate_with_progress] Audio {idx+1} path: {path}")
-            else:
-                audio_playback_updates.append(gr.update(value=None, label="None", interactive=False))
-    else:
-        # Non-Windows: audio was already progressively yielded, just reset playback position
-        for idx in range(8):
-            path = audio_outputs[idx]
-            if path:
-                audio_playback_updates.append(gr.update(playback_position=0, label=f"Sample {idx+1} (Ready)", interactive=True))
-            else:
-                audio_playback_updates.append(gr.update(value=None, label="None", interactive=False))
+    for idx in range(8):
+        path = audio_outputs[idx]
+        if path:
+            # Pass path directly; Gradio Audio component with type="filepath" expects a string path
+            audio_playback_updates.append(gr.update(value=path, label=f"Sample {idx+1} (Ready)", interactive=True))
+            logger.info(f"[generate_with_progress] Audio {idx+1} path: {path}")
+        else:
+            audio_playback_updates.append(gr.update(value=None, label="None", interactive=False))
 
     yield (
         # Audio outputs - use gr.update() to force component refresh
