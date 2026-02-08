@@ -1347,7 +1347,7 @@ def main():
 
     use_flash_attention = args.use_flash_attention
     if use_flash_attention is None:
-        use_flash_attention = dit_handler.is_flash_attention_available()
+        use_flash_attention = dit_handler.is_flash_attention_available(device)
 
     print(f"Initializing DiT handler with model: {args.config_path}")
     dit_handler.initialize_service(
@@ -1398,7 +1398,7 @@ def main():
             backend=args.backend,
             device=device,
             offload_to_cpu=args.offload_to_cpu,
-            dtype=dit_handler.dtype,
+            dtype=None,
         )
     else:
         if args.task_type in skip_lm_tasks:

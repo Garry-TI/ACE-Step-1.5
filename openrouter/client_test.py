@@ -19,6 +19,9 @@ from typing import Optional
 
 import requests
 
+# This file is an executable API client script, not a pytest test module.
+__test__ = False
+
 
 # =============================================================================
 # 配置

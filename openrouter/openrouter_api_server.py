@@ -567,7 +567,7 @@ def create_app() -> FastAPI:
                 backend=backend,
                 device=device,
                 offload_to_cpu=lm_offload,
-                dtype=handler.dtype,
+                dtype=None,
             )
             app.state._llm_initialized = lm_ok
             if lm_ok:

@@ -46,7 +46,8 @@ dependencies = [
     # Local third-party packages
     # nano-vllm is a local package - install separately: pip install -e acestep/third_parts/nano-vllm
     # For uv users: automatically handled via [tool.uv.sources]
-    "modelscope"
+    "modelscope",
+    "tensorboard>=2.20.0",
 ]
 
 [[tool.uv.index]]
