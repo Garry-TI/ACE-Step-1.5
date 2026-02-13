@@ -23,7 +23,7 @@ from transformers.generation.logits_process import (
 )
 from acestep.constrained_logits_processor import MetadataConstrainedLogitsProcessor
 from acestep.constants import DEFAULT_LM_INSTRUCTION, DEFAULT_LM_UNDERSTAND_INSTRUCTION, DEFAULT_LM_INSPIRED_INSTRUCTION, DEFAULT_LM_REWRITE_INSTRUCTION
-from acestep.gpu_config import get_lm_gpu_memory_ratio, get_gpu_memory_gb, get_lm_model_size, get_global_gpu_config
+from acestep.gpu_config import get_lm_gpu_memory_ratio, get_gpu_memory_gb, get_lm_model_size, get_global_gpu_config, get_gpu_count
 
 # Minimum free VRAM (GB) required to attempt vLLM initialization.
 # vLLM's KV cache allocator adapts to available memory, so we only need a
@@ -161,8 +161,11 @@ class LLMHandler:
             total_gpu_mem_bytes = torch.cuda.get_device_properties(device).total_memory
             total_gpu = total_gpu_mem_bytes / 1024**3
 
-            # Check if LM is on its own GPU (different from DiT)
-            lm_on_separate_gpu = device_idx > 0
+            # Check if LM is on its own GPU (different from DiT).
+            # We detect this by checking if PyTorch has minimal allocations on
+            # this device — if DiT were here, ~5+ GB would already be reserved.
+            pytorch_reserved_gb = torch.cuda.memory_reserved(device) / (1024 ** 3)
+            lm_on_separate_gpu = pytorch_reserved_gb < 1.0 and get_gpu_count() >= 2
 
             low_gpu_memory_mode = False
 

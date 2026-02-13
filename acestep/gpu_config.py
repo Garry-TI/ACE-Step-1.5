@@ -75,8 +75,16 @@ def auto_assign_devices() -> Tuple[str, str]:
 
     Strategy:
     - 1 GPU or 0 GPUs: both on ``cuda:0`` (current single-GPU behaviour).
-    - 2+ GPUs: DiT goes on the GPU with the most VRAM (needs more headroom
-      for batch activations); LM goes on the second-largest GPU.
+    - 2+ GPUs: DiT on ``cuda:0``, LM on ``cuda:1``.
+
+    GPU 0 is typically the primary display adapter and has less *free* VRAM
+    due to the display server / desktop environment.  DiT loads first and
+    coexists fine with the display overhead, while the LM benefits from the
+    clean secondary GPU where it can claim maximum free VRAM via nano-vllm.
+
+    Only when one GPU has significantly more total VRAM (>2 GB difference)
+    do we put DiT on the larger GPU (it needs more headroom for batch
+    activations) and LM on the smaller one.
 
     Returns:
         ``(dit_device, lm_device)`` strings, e.g. ``("cuda:0", "cuda:1")``.
@@ -85,10 +93,18 @@ def auto_assign_devices() -> Tuple[str, str]:
     if len(gpus) < 2:
         return ("cuda:0", "cuda:0")
 
-    # Sort by memory descending; ties broken by lower index
-    ranked = sorted(gpus, key=lambda g: (-g["memory_gb"], g["index"]))
-    dit_idx = ranked[0]["index"]
-    lm_idx = ranked[1]["index"]
+    # Default: DiT on GPU 0, LM on GPU 1 (LM gets the clean secondary GPU)
+    dit_idx, lm_idx = 0, 1
+
+    # Only flip when one GPU has significantly more VRAM (>2 GB difference)
+    if len(gpus) >= 2:
+        sorted_gpus = sorted(gpus, key=lambda g: -g["memory_gb"])
+        largest = sorted_gpus[0]
+        second = sorted_gpus[1]
+        if largest["memory_gb"] - second["memory_gb"] > 2.0:
+            dit_idx = largest["index"]
+            lm_idx = second["index"]
+
     return (f"cuda:{dit_idx}", f"cuda:{lm_idx}")
 
 
