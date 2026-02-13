@@ -301,27 +301,41 @@ class AceStepHandler(LoraManagerMixin, ProgressMixin):
                 )
             if device == "auto":
                 if torch.cuda.is_available():
-                    device = "cuda"
+                    device = "cuda:0"
                 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                     device = "mps"
                 elif hasattr(torch, 'xpu') and torch.xpu.is_available():
                     device = "xpu"
                 else:
                     device = "cpu"
-            elif device == "cuda" and not torch.cuda.is_available():
-                if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                    logger.warning("[initialize_service] CUDA requested but unavailable. Falling back to MPS.")
-                    device = "mps"
-                elif hasattr(torch, 'xpu') and torch.xpu.is_available():
-                    logger.warning("[initialize_service] CUDA requested but unavailable. Falling back to XPU.")
-                    device = "xpu"
+            elif device == "cuda":
+                # Resolve bare "cuda" to explicit "cuda:0"
+                if torch.cuda.is_available():
+                    device = "cuda:0"
                 else:
-                    logger.warning("[initialize_service] CUDA requested but unavailable. Falling back to CPU.")
+                    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                        logger.warning("[initialize_service] CUDA requested but unavailable. Falling back to MPS.")
+                        device = "mps"
+                    elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+                        logger.warning("[initialize_service] CUDA requested but unavailable. Falling back to XPU.")
+                        device = "xpu"
+                    else:
+                        logger.warning("[initialize_service] CUDA requested but unavailable. Falling back to CPU.")
+                        device = "cpu"
+            elif device.startswith("cuda:"):
+                # Specific CUDA device requested (e.g. "cuda:0", "cuda:1")
+                if not torch.cuda.is_available():
+                    logger.warning(f"[initialize_service] {device} requested but CUDA unavailable. Falling back to CPU.")
                     device = "cpu"
+                else:
+                    dev_idx = int(device.split(":")[1])
+                    if dev_idx >= torch.cuda.device_count():
+                        logger.warning(f"[initialize_service] {device} requested but only {torch.cuda.device_count()} GPU(s) found. Falling back to cuda:0.")
+                        device = "cuda:0"
             elif device == "mps" and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
                 if torch.cuda.is_available():
                     logger.warning("[initialize_service] MPS requested but unavailable. Falling back to CUDA.")
-                    device = "cuda"
+                    device = "cuda:0"
                 elif hasattr(torch, 'xpu') and torch.xpu.is_available():
                     logger.warning("[initialize_service] MPS requested but unavailable. Falling back to XPU.")
                     device = "xpu"
@@ -331,7 +345,7 @@ class AceStepHandler(LoraManagerMixin, ProgressMixin):
             elif device == "xpu" and not (hasattr(torch, 'xpu') and torch.xpu.is_available()):
                 if torch.cuda.is_available():
                     logger.warning("[initialize_service] XPU requested but unavailable. Falling back to CUDA.")
-                    device = "cuda"
+                    device = "cuda:0"
                 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                     logger.warning("[initialize_service] XPU requested but unavailable. Falling back to MPS.")
                     device = "mps"
@@ -635,7 +649,8 @@ class AceStepHandler(LoraManagerMixin, ProgressMixin):
     
     def _empty_cache(self):
         """Clear accelerator memory cache (CUDA, XPU, or MPS)."""
-        device_type = self.device if isinstance(self.device, str) else self.device.type
+        device_str = str(self.device)
+        device_type = device_str.split(":")[0]
         if device_type == "cuda" and torch.cuda.is_available():
             torch.cuda.empty_cache()
         elif device_type == "xpu" and hasattr(torch, 'xpu') and torch.xpu.is_available():
@@ -645,7 +660,8 @@ class AceStepHandler(LoraManagerMixin, ProgressMixin):
 
     def _synchronize(self):
         """Synchronize accelerator operations (CUDA, XPU, or MPS)."""
-        device_type = self.device if isinstance(self.device, str) else self.device.type
+        device_str = str(self.device)
+        device_type = device_str.split(":")[0]
         if device_type == "cuda" and torch.cuda.is_available():
             torch.cuda.synchronize()
         elif device_type == "xpu" and hasattr(torch, 'xpu') and torch.xpu.is_available():
@@ -655,31 +671,46 @@ class AceStepHandler(LoraManagerMixin, ProgressMixin):
 
     def _memory_allocated(self):
         """Get current accelerator memory usage in bytes, or 0 for unsupported backends."""
-        device_type = self.device if isinstance(self.device, str) else self.device.type
+        device_str = str(self.device)
+        device_type = device_str.split(":")[0]
         if device_type == "cuda" and torch.cuda.is_available():
-            return torch.cuda.memory_allocated()
+            dev = torch.device(device_str)
+            return torch.cuda.memory_allocated(dev)
         # MPS and XPU don't expose per-tensor memory tracking
         return 0
 
     def _max_memory_allocated(self):
         """Get peak accelerator memory usage in bytes, or 0 for unsupported backends."""
-        device_type = self.device if isinstance(self.device, str) else self.device.type
+        device_str = str(self.device)
+        device_type = device_str.split(":")[0]
         if device_type == "cuda" and torch.cuda.is_available():
-            return torch.cuda.max_memory_allocated()
+            dev = torch.device(device_str)
+            return torch.cuda.max_memory_allocated(dev)
         return 0
 
     def _is_on_target_device(self, tensor, target_device):
-        """Check if tensor is on the target device (handles cuda vs cuda:0 comparison)."""
+        """Check if tensor is on the target device (handles cuda vs cuda:0 comparison).
+
+        With multi-GPU support we need to compare the full device spec
+        (including index) so that cuda:0 and cuda:1 are distinguished.
+        """
         if tensor is None:
             return True
         try:
-            if isinstance(target_device, torch.device):
-                target_type = target_device.type
-            else:
-                target_type = torch.device(str(target_device)).type
+            target = torch.device(str(target_device))
+            actual = tensor.device
+            # Compare type first
+            if actual.type != target.type:
+                return False
+            # For CUDA devices, also compare index (None == 0)
+            if actual.type == "cuda":
+                actual_idx = actual.index if actual.index is not None else 0
+                target_idx = target.index if target.index is not None else 0
+                return actual_idx == target_idx
+            return True
         except Exception:
             target_type = "cpu" if str(target_device) == "cpu" else "cuda"
-        return tensor.device.type == target_type
+            return tensor.device.type == target_type
 
     @staticmethod
     def _get_affine_quantized_tensor_class():

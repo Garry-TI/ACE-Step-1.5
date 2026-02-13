@@ -36,7 +36,7 @@ try:
     from .llm_inference import LLMHandler
     from .dataset_handler import DatasetHandler
     from .gradio_ui import create_gradio_interface
-    from .gpu_config import get_gpu_config, get_gpu_memory_gb, print_gpu_config_info, set_global_gpu_config, VRAM_16GB_MIN_GB, VRAM_AUTO_OFFLOAD_THRESHOLD_GB, is_mps_platform
+    from .gpu_config import get_gpu_config, get_gpu_memory_gb, print_gpu_config_info, set_global_gpu_config, VRAM_16GB_MIN_GB, VRAM_AUTO_OFFLOAD_THRESHOLD_GB, is_mps_platform, get_gpu_count, auto_assign_devices, get_all_gpu_info
     from .model_downloader import ensure_lm_model
 except ImportError:
     # When executed as a script: `python acestep/acestep_v15_pipeline.py`
@@ -47,7 +47,7 @@ except ImportError:
     from acestep.llm_inference import LLMHandler
     from acestep.dataset_handler import DatasetHandler
     from acestep.gradio_ui import create_gradio_interface
-    from acestep.gpu_config import get_gpu_config, get_gpu_memory_gb, print_gpu_config_info, set_global_gpu_config, VRAM_16GB_MIN_GB, VRAM_AUTO_OFFLOAD_THRESHOLD_GB, is_mps_platform
+    from acestep.gpu_config import get_gpu_config, get_gpu_memory_gb, print_gpu_config_info, set_global_gpu_config, VRAM_16GB_MIN_GB, VRAM_AUTO_OFFLOAD_THRESHOLD_GB, is_mps_platform, get_gpu_count, auto_assign_devices, get_all_gpu_info
     from acestep.model_downloader import ensure_lm_model
 
 
@@ -154,7 +154,8 @@ def main():
     parser.add_argument("--init_service", type=lambda x: x.lower() in ['true', '1', 'yes'], default=False, help="Initialize service on startup (default: False)")
     parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint file path (optional, for display purposes)")
     parser.add_argument("--config_path", type=str, default=None, help="Main model path (e.g., 'acestep-v15-turbo')")
-    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "mps", "xpu", "cpu"], help="Processing device (default: auto)")
+    parser.add_argument("--device", type=str, default="auto", help="Processing device for DiT (default: auto). Accepts: auto, cuda, cuda:0, cuda:1, mps, xpu, cpu")
+    parser.add_argument("--lm_device", type=str, default="auto", help="Device for 5Hz LM model (default: auto). Use 'cuda:1' for second GPU. When 'auto' with 2+ GPUs, automatically uses the second GPU.")
     parser.add_argument("--init_llm", type=lambda x: x.lower() in ['true', '1', 'yes'], default=None, help="Initialize 5Hz LM (default: auto based on GPU memory)")
     parser.add_argument("--lm_model_path", type=str, default=None, help="5Hz LM model path (e.g., 'acestep-5Hz-lm-0.6B')")
     parser.add_argument("--backend", type=str, default=_default_backend, choices=["vllm", "pt", "mlx"], help=f"5Hz LM backend (default: {_default_backend}, use 'mlx' for native Apple Silicon acceleration)")
@@ -172,6 +173,41 @@ def main():
     parser.add_argument("--api-key", type=str, default=None, help="API key for API endpoints authentication")
 
     args = parser.parse_args()
+
+    # --- Multi-GPU auto-assignment ---
+    _multi_gpu_active = False
+    try:
+        import torch
+        _num_gpus = get_gpu_count()
+        if _num_gpus >= 2:
+            all_gpus = get_all_gpu_info()
+            print(f"\nMulti-GPU detected: {_num_gpus} GPUs available")
+            for gpu in all_gpus:
+                print(f"  GPU {gpu['index']}: {gpu['name']} ({gpu['memory_gb']:.1f} GB)")
+
+            if args.lm_device == "auto":
+                dit_dev, lm_dev = auto_assign_devices()
+                if args.device == "auto":
+                    args.device = dit_dev
+                args.lm_device = lm_dev
+                print(f"  Auto-assigned: DiT -> {args.device}, LM -> {args.lm_device}")
+                _multi_gpu_active = (args.device != args.lm_device)
+            elif args.device == "auto" and torch.cuda.is_available():
+                args.device = "cuda:0"
+
+            if _multi_gpu_active:
+                # With separate GPUs, CPU offloading is unnecessary
+                if args.offload_to_cpu:
+                    args.offload_to_cpu = False
+                    print("  Multi-GPU: Disabled CPU offloading (models on separate GPUs)")
+        else:
+            # Single GPU: lm_device falls back to main device
+            if args.lm_device == "auto":
+                args.lm_device = args.device
+    except Exception as e:
+        print(f"Warning: Multi-GPU detection failed: {e}")
+        if args.lm_device == "auto":
+            args.lm_device = args.device
 
     # Enable API requires init_service
     if args.enable_api:
@@ -209,7 +245,8 @@ def main():
     
     # Auto-enable CPU offload for tier6 GPUs (16-24GB) when using the 4B LM model
     # The 4B LM (~8GB) + DiT (~4.7GB) + VAE + text encoder exceeds 16-20GB with activations
-    if not args.offload_to_cpu and args.lm_model_path and "4B" in args.lm_model_path:
+    # Skip when multi-GPU is active (models on separate GPUs don't compete for VRAM)
+    if not _multi_gpu_active and not args.offload_to_cpu and args.lm_model_path and "4B" in args.lm_model_path:
         if 0 < gpu_memory_gb <= 24:
             args.offload_to_cpu = True
             print(f"Auto-enabling CPU offload (4B LM model requires offloading on {gpu_memory_gb:.0f}GB GPU)")
@@ -217,7 +254,8 @@ def main():
     # Safety: on 16GB GPUs, prevent selecting LM models that are too large.
     # Even with offloading, a 4B LM (8 GB weights + KV cache) leaves almost no
     # headroom for DiT activations on a 16 GB card.
-    if args.lm_model_path and 0 < gpu_memory_gb < VRAM_AUTO_OFFLOAD_THRESHOLD_GB:
+    # Skip when multi-GPU is active (LM has its own GPU).
+    if not _multi_gpu_active and args.lm_model_path and 0 < gpu_memory_gb < VRAM_AUTO_OFFLOAD_THRESHOLD_GB:
         if "4B" in args.lm_model_path:
             # Downgrade to 1.7B if available
             fallback = args.lm_model_path.replace("4B", "1.7B")
@@ -320,12 +358,13 @@ def main():
                     except Exception as e:
                         print(f"Warning: Failed to download LM model: {e}", file=sys.stderr)
 
-                    print(f"Initializing 5Hz LM: {args.lm_model_path} on {args.device}...")
+                    _lm_dev = args.lm_device if hasattr(args, 'lm_device') else args.device
+                    print(f"Initializing 5Hz LM: {args.lm_model_path} on {_lm_dev}...")
                     lm_status, lm_success = llm_handler.initialize(
                         checkpoint_dir=checkpoint_dir,
                         lm_model_path=args.lm_model_path,
                         backend=args.backend,
-                        device=args.device,
+                        device=_lm_dev,
                         offload_to_cpu=args.offload_to_cpu,
                         dtype=None,
                     )
@@ -344,6 +383,7 @@ def main():
                 'checkpoint': args.checkpoint,
                 'config_path': args.config_path,
                 'device': args.device,
+                'lm_device': getattr(args, 'lm_device', args.device),
                 'init_llm': args.init_llm,
                 'lm_model_path': args.lm_model_path,
                 'backend': args.backend,
@@ -357,6 +397,7 @@ def main():
                 'language': args.language,
                 'gpu_config': gpu_config,  # Pass GPU config to UI
                 'output_dir': output_dir,  # Pass output dir to UI
+                'multi_gpu_active': _multi_gpu_active,
             }
             
             print("Service initialization completed successfully!")

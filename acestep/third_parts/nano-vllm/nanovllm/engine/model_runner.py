@@ -69,7 +69,14 @@ class ModelRunner:
         # Use gloo backend on Windows, nccl on Linux/other platforms
         backend = "gloo" if sys.platform == "win32" else "nccl"
         dist.init_process_group(backend, f"tcp://127.0.0.1:{dist_port}", world_size=self.world_size, rank=rank)
-        torch.cuda.set_device(rank)
+        # Respect the CUDA device set by the caller (e.g. multi-GPU pipeline
+        # parallelism) instead of overriding with rank.  For single-GPU setups
+        # the current device will already be 0, so this is a no-op.
+        if self.world_size == 1:
+            # Single-process: keep whatever device the caller configured
+            pass
+        else:
+            torch.cuda.set_device(rank)
         default_dtype = torch.get_default_dtype()
         # Use dtype instead of deprecated torch_dtype
         config_dtype = getattr(hf_config, 'dtype', getattr(hf_config, 'torch_dtype', torch.bfloat16))

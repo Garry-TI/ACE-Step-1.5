@@ -37,6 +37,61 @@ PYTORCH_CUDA_INSTALL_URL = "https://download.pytorch.org/whl/cu121"
 PYTORCH_ROCM_INSTALL_URL = "https://download.pytorch.org/whl/rocm6.0"
 
 
+def get_gpu_count() -> int:
+    """Return the number of available CUDA GPUs."""
+    try:
+        import torch
+        return torch.cuda.device_count() if torch.cuda.is_available() else 0
+    except Exception:
+        return 0
+
+
+def get_all_gpu_info() -> List[Dict]:
+    """Detect all available CUDA GPUs and return their properties.
+
+    Returns:
+        List of dicts with keys: index, name, memory_gb.
+        Empty list if no CUDA GPUs are available.
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return []
+        gpus = []
+        for i in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(i)
+            gpus.append({
+                "index": i,
+                "name": props.name,
+                "memory_gb": props.total_memory / (1024 ** 3),
+            })
+        return gpus
+    except Exception:
+        return []
+
+
+def auto_assign_devices() -> Tuple[str, str]:
+    """Automatically assign DiT and LM to separate GPUs when available.
+
+    Strategy:
+    - 1 GPU or 0 GPUs: both on ``cuda:0`` (current single-GPU behaviour).
+    - 2+ GPUs: DiT goes on the GPU with the most VRAM (needs more headroom
+      for batch activations); LM goes on the second-largest GPU.
+
+    Returns:
+        ``(dit_device, lm_device)`` strings, e.g. ``("cuda:0", "cuda:1")``.
+    """
+    gpus = get_all_gpu_info()
+    if len(gpus) < 2:
+        return ("cuda:0", "cuda:0")
+
+    # Sort by memory descending; ties broken by lower index
+    ranked = sorted(gpus, key=lambda g: (-g["memory_gb"], g["index"]))
+    dit_idx = ranked[0]["index"]
+    lm_idx = ranked[1]["index"]
+    return (f"cuda:{dit_idx}", f"cuda:{lm_idx}")
+
+
 def is_mps_platform() -> bool:
     """Check if running on macOS with MPS (Apple Silicon) available.
     
@@ -283,17 +338,20 @@ GPU_TIER_CONFIGS = {
 GPU_TIER_CONFIGS["tier6"] = GPU_TIER_CONFIGS["tier6b"]
 
 
-def get_gpu_memory_gb() -> float:
+def get_gpu_memory_gb(device_index: int = 0) -> float:
     """
     Get GPU memory in GB. Returns 0 if no GPU is available.
-    
+
+    Args:
+        device_index: CUDA device index to query (default 0 for backward compat).
+
     Debug Mode:
         Set environment variable MAX_CUDA_VRAM to override the detected GPU memory.
         Example: MAX_CUDA_VRAM=8 python acestep  # Simulates 8GB GPU
-        
+
         For MPS testing, set MAX_MPS_VRAM to override MPS memory detection.
         Example: MAX_MPS_VRAM=16 python acestep  # Simulates 16GB MPS
-        
+
         This allows testing different GPU tier configurations on high-end hardware.
     """
     # Check for debug override first
@@ -349,10 +407,10 @@ def get_gpu_memory_gb() -> float:
     try:
         import torch
         if torch.cuda.is_available():
-            # Get total memory of the first GPU in GB
-            total_memory = torch.cuda.get_device_properties(0).total_memory
+            # Get total memory of the specified GPU in GB
+            total_memory = torch.cuda.get_device_properties(device_index).total_memory
             memory_gb = total_memory / (1024**3)  # Convert bytes to GB
-            device_name = torch.cuda.get_device_name(0)
+            device_name = torch.cuda.get_device_name(device_index)
             is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
             if is_rocm:
                 logger.info(f"ROCm GPU detected: {device_name} ({memory_gb:.1f} GB, HIP {torch.version.hip})")
@@ -663,19 +721,21 @@ def find_best_lm_model_on_disk(recommended_model: str, disk_models: List[str]) -
     return disk_models[0] if disk_models else None
 
 
-def get_lm_gpu_memory_ratio(model_path: str, total_gpu_memory_gb: float) -> Tuple[float, float]:
+def get_lm_gpu_memory_ratio(model_path: str, total_gpu_memory_gb: float, device_index: int = 0, lm_on_separate_gpu: bool = False) -> Tuple[float, float]:
     """
     Calculate GPU memory utilization ratio for LM model.
-    
+
     This function now uses *actually free* VRAM (via torch.cuda.mem_get_info)
     when available, instead of computing the ratio purely from total VRAM.
     This is critical because DiT, VAE, and text encoder are already loaded
     when the LM initializes, so the "available" memory is much less than total.
-    
+
     Args:
         model_path: LM model path (e.g., "acestep-5Hz-lm-0.6B")
         total_gpu_memory_gb: Total GPU memory in GB (used as fallback)
-        
+        device_index: CUDA device index to query (default 0).
+        lm_on_separate_gpu: If True, LM has its own GPU — no DiT reserve needed.
+
     Returns:
         Tuple of (gpu_memory_utilization_ratio, target_memory_gb)
     """
@@ -695,10 +755,10 @@ def get_lm_gpu_memory_ratio(model_path: str, total_gpu_memory_gb: float) -> Tupl
     try:
         import torch
         if torch.cuda.is_available():
-            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            free_bytes, total_bytes = torch.cuda.mem_get_info(device_index)
             free_gb = free_bytes / (1024**3)
             actual_total_gb = total_bytes / (1024**3)
-            
+
             # If MAX_CUDA_VRAM is set, use the simulated values instead
             # because set_per_process_memory_fraction limits actual allocation
             debug_vram = os.environ.get(DEBUG_MAX_CUDA_VRAM_ENV)
@@ -709,17 +769,17 @@ def get_lm_gpu_memory_ratio(model_path: str, total_gpu_memory_gb: float) -> Tupl
                         # Use reference context (matching set_per_process_memory_fraction)
                         ref_context_gb = MODEL_VRAM.get("cuda_context", 0.5)
                         allocator_budget_gb = max(0.5, simulated_gb - ref_context_gb)
-                        reserved_gb = torch.cuda.memory_reserved() / (1024**3)
+                        reserved_gb = torch.cuda.memory_reserved(device_index) / (1024**3)
                         free_gb = max(0, allocator_budget_gb - reserved_gb)
                         actual_total_gb = simulated_gb
                 except (ValueError, TypeError):
                     pass
-            
+
             # The ratio is relative to total GPU memory (nano-vllm convention),
             # but we compute it so that the LM only claims what's actually free
             # minus a safety margin for DiT inference activations.
-            # Reserve at least 1.5 GB for DiT inference activations
-            dit_reserve_gb = 1.5
+            # When LM is on its own GPU (multi-GPU mode), no DiT reserve needed.
+            dit_reserve_gb = 0.0 if lm_on_separate_gpu else 1.5
             usable_for_lm = max(0, free_gb - dit_reserve_gb - VRAM_SAFETY_MARGIN_GB)
             
             # Cap to what the LM actually needs
@@ -1069,6 +1129,12 @@ def get_recommended_lm_model(gpu_config: GPUConfig) -> Optional[str]:
 
 def print_gpu_config_info(gpu_config: GPUConfig):
     """Print GPU configuration information for debugging."""
+    # Show all detected GPUs
+    all_gpus = get_all_gpu_info()
+    if len(all_gpus) > 1:
+        logger.info(f"Multi-GPU detected: {len(all_gpus)} GPUs available")
+        for gpu in all_gpus:
+            logger.info(f"  - GPU {gpu['index']}: {gpu['name']} ({gpu['memory_gb']:.1f} GB)")
     logger.info(f"GPU Configuration:")
     logger.info(f"  - GPU Memory: {gpu_config.gpu_memory_gb:.1f} GB")
     logger.info(f"  - Tier: {gpu_config.tier}")
@@ -1096,10 +1162,13 @@ GPU_TIER_LABELS = {
 GPU_TIER_CHOICES = list(GPU_TIER_LABELS.items())  # [(value, label), ...]
 
 
-def get_gpu_device_name() -> str:
+def get_gpu_device_name(device_index: int = 0) -> str:
     """
     Get the GPU device name string.
-    
+
+    Args:
+        device_index: CUDA device index to query (default 0).
+
     Returns:
         Human-readable GPU name, e.g. "NVIDIA GeForce RTX 4060 Ti",
         "Apple M2 Pro (MPS)", "CPU only", etc.
@@ -1107,7 +1176,7 @@ def get_gpu_device_name() -> str:
     try:
         import torch
         if torch.cuda.is_available():
-            return torch.cuda.get_device_name(0)
+            return torch.cuda.get_device_name(device_index)
         elif hasattr(torch, 'xpu') and torch.xpu.is_available():
             props = torch.xpu.get_device_properties(0)
             return getattr(props, 'name', 'Intel XPU')

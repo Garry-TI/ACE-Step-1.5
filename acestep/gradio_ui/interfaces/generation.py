@@ -13,7 +13,7 @@ from acestep.constants import (
 )
 from acestep.gradio_ui.i18n import t
 from acestep.gradio_ui.events.generation_handlers import get_ui_control_config
-from acestep.gpu_config import get_global_gpu_config, GPUConfig, is_lm_model_size_allowed, find_best_lm_model_on_disk, get_gpu_device_name, GPU_TIER_LABELS, GPU_TIER_CHOICES
+from acestep.gpu_config import get_global_gpu_config, GPUConfig, is_lm_model_size_allowed, find_best_lm_model_on_disk, get_gpu_device_name, GPU_TIER_LABELS, GPU_TIER_CHOICES, get_gpu_count, get_all_gpu_info
 
 
 def create_generation_section(dit_handler, llm_handler, init_params=None, language='en') -> dict:
@@ -102,8 +102,17 @@ def create_generation_section(dit_handler, llm_handler, init_params=None, langua
                 )
             
             # GPU info display and tier override
-            _gpu_device_name = get_gpu_device_name()
-            _gpu_info_text = f"🖥️ **{_gpu_device_name}** — {gpu_config.gpu_memory_gb:.1f} GB VRAM — {t('service.gpu_auto_tier')}: **{GPU_TIER_LABELS.get(gpu_config.tier, gpu_config.tier)}**"
+            _num_gpus = get_gpu_count()
+            if _num_gpus >= 2:
+                _all_gpus = get_all_gpu_info()
+                _gpu_lines = " | ".join(
+                    f"GPU {g['index']}: **{g['name']}** ({g['memory_gb']:.1f} GB)"
+                    for g in _all_gpus
+                )
+                _gpu_info_text = f"🖥️ {_gpu_lines} — {t('service.gpu_auto_tier')}: **{GPU_TIER_LABELS.get(gpu_config.tier, gpu_config.tier)}**"
+            else:
+                _gpu_device_name = get_gpu_device_name()
+                _gpu_info_text = f"🖥️ **{_gpu_device_name}** — {gpu_config.gpu_memory_gb:.1f} GB VRAM — {t('service.gpu_auto_tier')}: **{GPU_TIER_LABELS.get(gpu_config.tier, gpu_config.tier)}**"
             with gr.Row():
                 gpu_info_display = gr.Markdown(value=_gpu_info_text)
             with gr.Row():
@@ -142,13 +151,38 @@ def create_generation_section(dit_handler, llm_handler, init_params=None, langua
                     value=config_path_value,
                     info=t("service.model_path_info")
                 )
+                # Build device choices — include cuda:N for each detected GPU
+                _device_choices = ["auto", "cuda"]
+                if _num_gpus >= 1:
+                    for i in range(_num_gpus):
+                        _device_choices.append(f"cuda:{i}")
+                _device_choices.extend(["mps", "xpu", "cpu"])
+
                 # Set device value from init_params if pre-initialized
                 device_value = init_params.get('device', 'auto') if service_pre_initialized else 'auto'
                 device = gr.Dropdown(
-                    choices=["auto", "cuda", "mps", "xpu", "cpu"],
+                    choices=_device_choices,
                     value=device_value,
                     label=t("service.device_label"),
                     info=t("service.device_info")
+                )
+
+            # LM device dropdown — only visible when multiple GPUs detected
+            if _num_gpus >= 2:
+                with gr.Row():
+                    lm_device_value = init_params.get('lm_device', 'auto') if service_pre_initialized else 'auto'
+                    _lm_device_choices = ["auto"] + [f"cuda:{i}" for i in range(_num_gpus)] + ["cpu"]
+                    lm_device = gr.Dropdown(
+                        choices=_lm_device_choices,
+                        value=lm_device_value,
+                        label=t("service.lm_device_label"),
+                        info=t("service.lm_device_info"),
+                    )
+            else:
+                lm_device = gr.Dropdown(
+                    choices=["auto"],
+                    value="auto",
+                    visible=False,
                 )
             
             with gr.Row():
@@ -852,6 +886,7 @@ def create_generation_section(dit_handler, llm_handler, init_params=None, langua
         "refresh_btn": refresh_btn,
         "config_path": config_path,
         "device": device,
+        "lm_device": lm_device,
         "init_btn": init_btn,
         "init_status": init_status,
         "lm_model_path": lm_model_path,

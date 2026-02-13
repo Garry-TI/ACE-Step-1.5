@@ -445,7 +445,7 @@ def update_model_type_settings(config_path):
     return get_model_type_ui_settings(is_turbo)
 
 
-def init_service_wrapper(dit_handler, llm_handler, checkpoint, config_path, device, init_llm, lm_model_path, backend, use_flash_attention, offload_to_cpu, offload_dit_to_cpu, compile_model, quantization, mlx_dit=True):
+def init_service_wrapper(dit_handler, llm_handler, checkpoint, config_path, device, lm_device, init_llm, lm_model_path, backend, use_flash_attention, offload_to_cpu, offload_dit_to_cpu, compile_model, quantization, mlx_dit=True):
     """Wrapper for service initialization, returns status, button state, accordion state, model type settings, and GPU-config-aware UI limits."""
     # Convert quantization checkbox to value (int8_weight_only if checked, None if not)
     quant_value = "int8_weight_only" if quantization else None
@@ -504,11 +504,13 @@ def init_service_wrapper(dit_handler, llm_handler, checkpoint, config_path, devi
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file))))
         checkpoint_dir = os.path.join(project_root, "checkpoints")
         
+        # Use separate LM device if specified (multi-GPU pipeline parallelism)
+        _lm_dev = lm_device if lm_device and lm_device != "auto" else device
         lm_status, lm_success = llm_handler.initialize(
             checkpoint_dir=checkpoint_dir,
             lm_model_path=lm_model_path,
             backend=backend,
-            device=device,
+            device=_lm_dev,
             offload_to_cpu=offload_to_cpu,
             dtype=None,
         )

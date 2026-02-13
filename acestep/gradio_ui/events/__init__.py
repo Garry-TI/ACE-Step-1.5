@@ -67,6 +67,7 @@ def setup_event_handlers(demo, dit_handler, llm_handler, dataset_handler, datase
             generation_section["checkpoint_dropdown"],
             generation_section["config_path"],
             generation_section["device"],
+            generation_section["lm_device"],
             generation_section["init_llm_checkbox"],
             generation_section["lm_model_path"],
             generation_section["backend_dropdown"],
